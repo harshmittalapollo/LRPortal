@@ -7,15 +7,23 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable missing")
 
-# Force SQLAlchemy to use pymysql
 DATABASE_URL = DATABASE_URL.replace(
     "mysql://",
     "mysql+pymysql://"
 )
 
+# remove unsupported parameter
+DATABASE_URL = DATABASE_URL.replace(
+    "?ssl-mode=REQUIRED",
+    ""
+)
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True
+    pool_pre_ping=True,
+    connect_args={
+        "ssl": {}
+    }
 )
 
 SessionLocal = sessionmaker(
