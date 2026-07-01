@@ -93,7 +93,26 @@ def clean_input_value(value):
     if value is None:
         return ""
     return str(value)
+    
+def parse_row_data(row_data):
+    try:
+        if not row_data:
+            return {}
 
+        # if already dictionary
+        if isinstance(row_data, dict):
+            return row_data
+
+        # convert JSON string to dict
+        data = json.loads(row_data)
+
+        if isinstance(data, dict):
+            return data
+
+        return {}
+
+    except Exception:
+        return {}
 
 def get_report_columns(db):
     columns=[]
