@@ -101,7 +101,7 @@ def get_report_columns(db):
 
     for row in db.query(ReportRow).order_by(ReportRow.id).all():
         try:
-            data=json.loads(row.row_data)
+            data=parse_row_data(row.row_data)
         except Exception:
             data={}
 
@@ -499,7 +499,7 @@ def report(username:str, month:str=""):
         rows=[]
         available_months=set()
         for row in db.query(ReportRow).order_by(ReportRow.id).all():
-            data=json.loads(row.row_data)
+            data=parse_row_data(row.row_data)
             dispatch_month=parse_dispatch_month(data.get(DISPATCH_DATE_COLUMN, ""))
             if dispatch_month:
                 available_months.add(dispatch_month)
@@ -553,7 +553,7 @@ def update_report(row_id:int,field:str,value:str,version:int,username:str):
         if row.version!=version:
             return {"error":"This row was updated by another user. Refresh the report."}
 
-        data=json.loads(row.row_data)
+        data=parse_row_data(row.row_data)
         old=str(data.get(field,""))
         data[field]=value
 
