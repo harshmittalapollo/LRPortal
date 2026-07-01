@@ -1,22 +1,11 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise Exception("DATABASE_URL environment variable missing")
-
-DATABASE_URL = DATABASE_URL.replace(
-    "mysql://",
-    "mysql+pymysql://"
-)
-
-# remove unsupported parameter
-DATABASE_URL = DATABASE_URL.replace(
-    "?ssl-mode=REQUIRED",
-    ""
-)
+    raise Exception("DATABASE_URL missing")
 
 engine = create_engine(
     DATABASE_URL,
@@ -33,3 +22,4 @@ SessionLocal = sessionmaker(
 )
 
 Base = declarative_base()
+
