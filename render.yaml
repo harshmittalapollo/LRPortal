@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: lrportal
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: LRPORTAL_DATABASE_URL
+        value: sqlite:///./lrportal.db
+      - key: LRPORTAL_CORS_ORIGINS
+        value: ""
