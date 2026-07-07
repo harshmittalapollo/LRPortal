@@ -3,6 +3,7 @@ param(
 )
 
 $env:LRPORTAL_DATABASE_URL = "mysql+pymysql://root:1234@127.0.0.1:3306/lrportal"
+$env:DATABASE_URL = $env:LRPORTAL_DATABASE_URL
 Set-Location $PSScriptRoot
 if (-not $Port) { $Port = "8002" }
 $env:BACKEND_PORT = $Port

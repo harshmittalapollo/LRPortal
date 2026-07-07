@@ -498,13 +498,13 @@ def report(username:str, month:str=""):
             ).all()
 
             access_by_column={
-                permission.column_name: permission.access
+                permission.column_name: normalize_permission_access(permission.access)
                 for permission in permissions
             }
 
         visible_columns=[]
         for column in all_columns:
-            access=access_by_column.get(column, "none")
+            access=normalize_permission_access(access_by_column.get(column, "none"))
             if access in {"view","edit"}:
                 visible_columns.append(
                     {
@@ -577,6 +577,12 @@ def update_report(
 
     db = SessionLocal()
     try:
+        username = clean_username(username)
+        try:
+            version = int(version)
+        except (TypeError, ValueError):
+            version = None
+
         permission=db.query(Permission).filter(
             Permission.username==username,
             Permission.column_name==field
@@ -591,7 +597,7 @@ def update_report(
         if not row:
             return {"error":"Row not found"}
 
-        if row.version!=version:
+        if version is None or row.version!=version:
             return {"error":"This row was updated by another user. Refresh the report."}
 
         data=parse_row_data(row.row_data)
