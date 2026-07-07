@@ -25,7 +25,15 @@ ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "abcd@1234"
 DISPATCH_DATE_COLUMN = "Dispatch Dt."
 LIMITED_ROW_CREATE_USERS = {"krishan"}
-LIMITED_ROW_CREATE_COLUMNS = ["Customer", "Origin", "Destination", "Vehicle Type"]
+LIMITED_ROW_CREATE_COLUMNS = [
+    "Customer",
+    "Origin",
+    "Destination",
+    "Vehicle Type",
+    "Vehicle No",
+    "Vendor Freight",
+    "Transport Name",
+]
 FRONTEND_BUILD_DIR = Path(__file__).resolve().parent.parent / "frontend" / "build"
 FRONTEND_INDEX = FRONTEND_BUILD_DIR / "index.html"
 
@@ -191,13 +199,11 @@ def get_addable_columns(db, username):
     if user_is_admin(db, username):
         return get_report_columns(db)
 
+    # For limited users (like Krishan) allow creating rows with the
+    # predefined limited columns even if they don't exist yet so they
+    # can add new fields when creating an entry.
     if clean_username(username).lower() in LIMITED_ROW_CREATE_USERS:
-        existing_columns=set(get_report_columns(db))
-        return [
-            column
-            for column in LIMITED_ROW_CREATE_COLUMNS
-            if column in existing_columns
-        ]
+        return LIMITED_ROW_CREATE_COLUMNS
 
     return []
 
@@ -554,15 +560,31 @@ def report(username:str, month:str=""):
 
 
 @app.put("/report/{row_id}")
-def update_report(row_id:int,field:str,value:str,version:int,username:str):
-    db=SessionLocal()
+def update_report(
+    row_id: int,
+    field: str = None,
+    value: str = None,
+    version: int = None,
+    username: str = None,
+    payload: dict = Body(None),
+):
+    # Accept either query params or JSON body payload
+    if payload and isinstance(payload, dict):
+        field = field or payload.get("field")
+        value = value or payload.get("value")
+        version = version or payload.get("version")
+        username = username or payload.get("username")
+
+    db = SessionLocal()
     try:
         permission=db.query(Permission).filter(
             Permission.username==username,
             Permission.column_name==field
         ).first()
 
-        if not permission or permission.access!="edit":
+        # normalize access (stores like 'edit'/'view'/'none')
+        access = normalize_permission_access(permission.access) if permission else "none"
+        if access != "edit" and not user_is_admin(db, username):
             return {"error":"You do not have edit access for this column"}
 
         row=db.query(ReportRow).filter(ReportRow.id==row_id).first()
@@ -574,7 +596,8 @@ def update_report(row_id:int,field:str,value:str,version:int,username:str):
 
         data=parse_row_data(row.row_data)
         old=str(data.get(field,""))
-        data[field]=value
+        if not isinstance(data, dict):data = {}
+        data[field] = value
 
         row.row_data=json.dumps(data)
         row.version+=1
@@ -614,11 +637,49 @@ def create_report(payload:ReportCreate):
             return {"error":"You do not have access to add a new entry"}
 
         columns=get_report_columns(db)
+        # include any new columns provided in payload.rowData
+        original_columns = get_report_columns(db)
+        for col in (payload.rowData or {}).keys():
+            if col not in columns:
+                columns.append(col)
+
+        # determine which columns are newly introduced by this payload
+        new_columns = [c for c in columns if c not in original_columns]
+
+        # Ensure Permission rows exist for new columns. Grant 'edit' to
+        # admin and to the creating user; others get 'none' by default.
+        if new_columns:
+            users = db.query(User).all()
+            for new_col in new_columns:
+                for u in users:
+                    existing = db.query(Permission).filter(
+                        Permission.username == u.username,
+                        Permission.column_name == new_col,
+                    ).first()
+                    if existing:
+                        continue
+                    access = "none"
+                    if u.username == ADMIN_USERNAME:
+                        access = "edit"
+                    if u.username == payload.username:
+                        access = "edit"
+                    db.add(
+                        Permission(
+                            username=u.username,
+                            column_name=new_col,
+                            access=access,
+                        )
+                    )
+            db.commit()
+
+        # Build row data for all columns (including newly provided ones)
         row_data={
             column: clean_input_value(payload.rowData.get(column, ""))
             for column in columns
         }
+
         if not user_is_admin(db, payload.username):
+            # Non-admin users can only set values for addable columns
             row_data={
                 column: clean_input_value(payload.rowData.get(column, ""))
                 if column in addable_columns
@@ -627,7 +688,7 @@ def create_report(payload:ReportCreate):
             }
 
         row=ReportRow(
-            row_data=json.dumps(row_data),
+            row_data=json.dumps(row_data if isinstance(row_data, dict) else {}),
             updated_by=payload.username
         )
         db.add(row)
