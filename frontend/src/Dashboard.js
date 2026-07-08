@@ -52,39 +52,47 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
   async function updateCell(rowId, field, value) {
     const row = rows.find((item) => item.id === rowId);
     if (!row || row[field] === value) {
-      return;
+      return row;
     }
 
     const cellKey = `${rowId}-${field}`;
     setSaving((prev) => ({ ...prev, [cellKey]: true }));
     setMessage("");
 
-    const params = new URLSearchParams({
+    const body = {
       field,
       value,
       version: row.version,
       username: session.username,
-    });
+    };
 
     try {
-      const response = await fetch(
-        `${API_URL}/report/${rowId}?${params.toString()}`,
-        { method: "PUT" }
-      );
+      const response = await fetch(`${API_URL}/report/${rowId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        setMessage(data.error || "Unable to update cell");
-        return;
+        throw new Error(data.error || data.detail || "Unable to update cell");
       }
+
+      const updatedRow = {
+        ...row,
+        [field]: value,
+        version: data.row?.version ?? data.version ?? row.version,
+      };
 
       setRows((prevRows) =>
         prevRows.map((r) =>
-          r.id === rowId ? { ...r, [field]: value, version: data.version } : r
+          r.id === rowId ? updatedRow : r
         )
       );
+      return updatedRow;
     } catch (error) {
-      setMessage("Update failed. Check backend connection.");
+      setMessage(error.message || "Update failed. Check backend connection.");
+      throw error;
     } finally {
       setSaving((prev) => {
         const updated = { ...prev };
@@ -92,6 +100,16 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
         return updated;
       });
     }
+  }
+
+  async function processRowUpdate(newRow, oldRow) {
+    const changedField = editableColumns.find((field) => newRow[field] !== oldRow[field]);
+
+    if (!changedField) {
+      return oldRow;
+    }
+
+    return updateCell(oldRow.id, changedField, newRow[changedField]);
   }
 
   async function addNewRow(event) {
@@ -172,11 +190,6 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
     headerName: col.headerName,
     width: 150,
     editable: editableColumns.includes(col.field),
-    onCellEditStop: (params) => {
-      if (params.reason !== "escapeKeyDown") {
-        updateCell(params.id, params.field, params.value);
-      }
-    },
   }));
 
   return (
@@ -249,7 +262,10 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
               pageSizeOptions={[10, 25, 50]}
               checkboxSelection
               disableSelectionOnClick
-              experimentalFeatures={{ newEditingApi: true }}
+              processRowUpdate={processRowUpdate}
+              onProcessRowUpdateError={(error) =>
+                setMessage(error.message || "Unable to update cell")
+              }
             />
           </div>
         ) : (
