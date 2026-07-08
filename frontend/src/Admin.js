@@ -18,10 +18,13 @@ function buildDefaultPermissions(columns, access = "none") {
 function Admin({ session, onBack, onLogout }) {
   const [users, setUsers] = useState([]);
   const [columns, setColumns] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [activePanel, setActivePanel] = useState("users");
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const loadUsers = useCallback(async function loadUsers() {
@@ -55,9 +58,35 @@ function Admin({ session, onBack, onLogout }) {
     }
   }, [session.username]);
 
+  const loadAuditLogs = useCallback(async function loadAuditLogs() {
+    setAuditLoading(true);
+    setMessage("");
+
+    try {
+      const params = new URLSearchParams({
+        adminUsername: session.username,
+        limit: "1000",
+      });
+      const response = await fetch(`${API_URL}/admin/audit-logs?${params.toString()}`);
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        setMessage(data.error || data.detail || "Unable to load audit logs");
+        return;
+      }
+
+      setAuditLogs(data.logs || []);
+    } catch (error) {
+      setMessage("Backend is not reachable. Start the backend on port 8000.");
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [session.username]);
+
   useEffect(() => {
     loadUsers();
-  }, [loadUsers]);
+    loadAuditLogs();
+  }, [loadUsers, loadAuditLogs]);
 
   function resetForm() {
     setForm({
@@ -96,6 +125,19 @@ function Admin({ session, onBack, onLogout }) {
       ...current,
       permissions: buildDefaultPermissions(columns, access),
     }));
+  }
+
+  function formatTimestamp(value) {
+    if (!value) {
+      return "";
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+
+    return date.toLocaleString();
   }
 
   async function saveUser(event) {
@@ -181,6 +223,24 @@ function Admin({ session, onBack, onLogout }) {
         <div className="session-actions">
           <span>{session.username}</span>
           <button type="button" onClick={onBack}>Report</button>
+          <button
+            type="button"
+            onClick={() => {
+              setActivePanel("users");
+              loadUsers();
+            }}
+          >
+            Users
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActivePanel("logs");
+              loadAuditLogs();
+            }}
+          >
+            Logs Report
+          </button>
           <button type="button" onClick={onLogout}>Logout</button>
         </div>
       </header>
@@ -191,6 +251,47 @@ function Admin({ session, onBack, onLogout }) {
         </p>
       )}
 
+      {activePanel === "logs" ? (
+        <section className="users-panel audit-panel">
+          <div className="add-entry-heading">
+            <h2>Logs Report</h2>
+            <button type="button" onClick={loadAuditLogs} disabled={auditLoading}>
+              {auditLoading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+
+          {auditLoading ? (
+            <div className="empty-state">Loading logs...</div>
+          ) : auditLogs.length === 0 ? (
+            <div className="empty-state">No logs found.</div>
+          ) : (
+            <table className="users-table audit-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>LR / Row</th>
+                  <th>Column</th>
+                  <th>Old Value</th>
+                  <th>New Value</th>
+                  <th>Updated By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td>{formatTimestamp(log.timestamp)}</td>
+                    <td>{log.lrNo}</td>
+                    <td>{log.columnName}</td>
+                    <td>{log.oldValue}</td>
+                    <td>{log.newValue}</td>
+                    <td>{log.updatedBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      ) : (
       <section className="admin-layout">
         <form onSubmit={saveUser} className="admin-form">
           <div className="add-entry-heading">
@@ -318,6 +419,7 @@ function Admin({ session, onBack, onLogout }) {
           )}
         </section>
       </section>
+      )}
     </main>
   );
 }
