@@ -570,14 +570,21 @@ def update_report(
 ):
     # Accept either query params or JSON body payload
     if payload and isinstance(payload, dict):
-        field = field or payload.get("field")
-        value = value or payload.get("value")
-        version = version or payload.get("version")
-        username = username or payload.get("username")
+        if field is None:
+            field = payload.get("field")
+        if value is None and "value" in payload:
+            value = payload.get("value")
+        if version is None:
+            version = payload.get("version")
+        if username is None:
+            username = payload.get("username")
 
     db = SessionLocal()
     try:
         username = clean_username(username)
+        if not username or not field:
+            raise HTTPException(status_code=400, detail="Username and field are required")
+
         try:
             version = int(version)
         except (TypeError, ValueError):
@@ -591,19 +598,19 @@ def update_report(
         # normalize access (stores like 'edit'/'view'/'none')
         access = normalize_permission_access(permission.access) if permission else "none"
         if access != "edit" and not user_is_admin(db, username):
-            return {"error":"You do not have edit access for this column"}
+            raise HTTPException(status_code=403, detail="You do not have edit access for this column")
 
         row=db.query(ReportRow).filter(ReportRow.id==row_id).first()
         if not row:
-            return {"error":"Row not found"}
+            raise HTTPException(status_code=404, detail="Row not found")
 
         if version is None or row.version!=version:
-            return {"error":"This row was updated by another user. Refresh the report."}
+            raise HTTPException(status_code=409, detail="This row was updated by another user. Refresh the report.")
 
         data=parse_row_data(row.row_data)
         old=str(data.get(field,""))
         if not isinstance(data, dict):data = {}
-        data[field] = value
+        data[field] = clean_input_value(value)
 
         row.row_data=json.dumps(data)
         row.version+=1
@@ -615,7 +622,7 @@ def update_report(
                 lr_no=str(data.get("LR NO",row_id)),
                 column_name=field,
                 old_value=old,
-                new_value=value,
+                new_value=clean_input_value(value),
                 updated_by=username
             )
         )
@@ -626,7 +633,7 @@ def update_report(
             "message":"updated",
             "row":{
                 "id":row.id,
-                field:value,
+                field:clean_input_value(value),
                 "version":row.version
             }
         }
