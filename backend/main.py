@@ -2,7 +2,7 @@ import csv
 import io
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query
@@ -24,6 +24,18 @@ from models import AuditLog, Permission, ReportRow, User
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "abcd@1234"
 DISPATCH_DATE_COLUMN = "Dispatch Dt."
+DATE_OF_ENTRY_COLUMN = "Date of entry"
+AUTO_CALCULATED_COLUMNS = [
+    "Customer Total",
+    "Vendor Total",
+    "Margin",
+    "Margin%",
+    "Adv.",
+    "Bal.",
+    "Assured Delivery Date",
+    "Delay",
+]
+SYSTEM_COLUMNS = [DATE_OF_ENTRY_COLUMN, *AUTO_CALCULATED_COLUMNS]
 LIMITED_ROW_CREATE_USERS = {"krishan"}
 LIMITED_ROW_CREATE_COLUMNS = [
     "Customer",
@@ -32,6 +44,7 @@ LIMITED_ROW_CREATE_COLUMNS = [
     "Vehicle Type",
     "Vehicle No",
     "Vendor Freight",
+    "Adv. Type",
     "Transport Name",
 ]
 FRONTEND_BUILD_DIR = Path(__file__).resolve().parent.parent / "frontend" / "build"
@@ -122,6 +135,126 @@ def parse_row_data(row_data):
     except Exception:
         return {}
 
+
+def parse_number(value):
+    text=str(value or "").strip().replace(",", "")
+    if not text:
+        return 0.0
+
+    if text.endswith("%"):
+        text=text[:-1].strip()
+
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def format_number(value, decimals=2):
+    try:
+        number=float(value)
+    except (TypeError, ValueError):
+        number=0.0
+
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def parse_date_value(value):
+    text=str(value or "").strip()
+    if not text:
+        return None
+
+    for parser in (
+        lambda item: datetime.fromisoformat(item.replace("Z", "+00:00")),
+        lambda item: datetime.strptime(item[:10], "%Y-%m-%d"),
+        lambda item: datetime.strptime(item[:10], "%d-%m-%Y"),
+        lambda item: datetime.strptime(item[:10], "%d/%m/%Y"),
+    ):
+        try:
+            parsed=parser(text)
+            if parsed.tzinfo:
+                parsed=parsed.astimezone(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
+            return parsed
+        except Exception:
+            pass
+
+    return None
+
+
+def format_date_value(value):
+    if not value:
+        return ""
+    return value.strftime("%Y-%m-%d")
+
+
+def today_ist():
+    ist=timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist).strftime("%Y-%m-%d")
+
+
+def parse_advance_factor(value):
+    text=str(value or "").strip()
+    if not text:
+        return 0.0
+
+    number=parse_number(text)
+    if "%" in text or number > 1:
+        return number / 100
+    return number
+
+
+def calculate_report_row(data):
+    if not isinstance(data, dict):
+        data={}
+
+    customer_total=sum(
+        parse_number(data.get(column))
+        for column in [
+            "Customer Freight",
+            "Customer Multi Point/ Over weight",
+            "Customer L/UL Charges",
+            "Customer Detention",
+            "Customer Other Charges",
+        ]
+    )
+    vendor_total=sum(
+        parse_number(data.get(column))
+        for column in [
+            "Vendor Freight",
+            "Vendor Multi Point",
+            "Vendor L/UL Charges",
+            "Vendor Detention",
+            "Vendor Other Charges",
+        ]
+    )
+    margin=customer_total - vendor_total
+    margin_percent=(margin / customer_total * 100) if customer_total else 0
+    advance=parse_advance_factor(data.get("Adv. Type")) * parse_number(data.get("Vendor Freight"))
+    balance=vendor_total - advance
+
+    dispatch_date=parse_date_value(data.get(DISPATCH_DATE_COLUMN))
+    assured_days=parse_number(data.get("Assured Date"))
+    assured_delivery_date=None
+    if dispatch_date and assured_days:
+        assured_delivery_date=dispatch_date + timedelta(days=int(assured_days))
+
+    reporting_date=parse_date_value(data.get("Date of Reporting"))
+    delay=""
+    if reporting_date and assured_delivery_date:
+        delay=str((reporting_date.date() - assured_delivery_date.date()).days)
+
+    data["Customer Total"]=format_number(customer_total)
+    data["Vendor Total"]=format_number(vendor_total)
+    data["Margin"]=format_number(margin)
+    data["Margin%"]=format_number(margin_percent)
+    data["Adv."]=format_number(advance)
+    data["Bal."]=format_number(balance)
+    data["Assured Delivery Date"]=format_date_value(assured_delivery_date)
+    data["Delay"]=delay
+    return data
+
 def get_report_columns(db):
     columns=[]
     seen=set()
@@ -142,6 +275,11 @@ def get_report_columns(db):
             if permission.column_name not in seen:
                 seen.add(permission.column_name)
                 columns.append(permission.column_name)
+
+    for column in SYSTEM_COLUMNS:
+        if column not in seen:
+            seen.add(column)
+            columns.append(column)
 
     return columns
 
@@ -176,6 +314,29 @@ def ensure_admin_user():
                     )
                 )
 
+        db.commit()
+    finally:
+        db.close()
+
+
+def ensure_system_column_permissions():
+    db=SessionLocal()
+    try:
+        for user in db.query(User).all():
+            for column in SYSTEM_COLUMNS:
+                existing=db.query(Permission).filter(
+                    Permission.username==user.username,
+                    Permission.column_name==column,
+                ).first()
+                if existing:
+                    continue
+                db.add(
+                    Permission(
+                        username=user.username,
+                        column_name=column,
+                        access="edit" if user.role=="Admin" else "view",
+                    )
+                )
         db.commit()
     finally:
         db.close()
@@ -264,28 +425,12 @@ def save_user_permissions(db, username, permissions):
 
 
 def parse_dispatch_month(value):
-    if value is None:
-        return ""
-
-    text=str(value).strip()
-    if not text:
-        return ""
-
-    for parser in (
-        lambda item: datetime.fromisoformat(item.replace("Z", "+00:00")),
-        lambda item: datetime.strptime(item[:10], "%Y-%m-%d"),
-        lambda item: datetime.strptime(item[:10], "%d-%m-%Y"),
-        lambda item: datetime.strptime(item[:10], "%d/%m/%Y"),
-    ):
-        try:
-            return parser(text).strftime("%Y-%m")
-        except Exception:
-            pass
-
-    return ""
+    parsed=parse_date_value(value)
+    return parsed.strftime("%Y-%m") if parsed else ""
 
 
 ensure_admin_user()
+ensure_system_column_permissions()
 
 
 @app.get("/")
@@ -484,7 +629,7 @@ def delete_user(user_id:int, adminUsername:str):
 
 
 @app.get("/report")
-def report(username:str, month:str=""):
+def report(username:str, month:str="", entryDate:str=""):
     db=SessionLocal()
     try:
         all_columns=get_report_columns(db)
@@ -517,19 +662,30 @@ def report(username:str, month:str=""):
         editable_columns=[
             column["field"]
             for column in visible_columns
-            if column["access"]=="edit"
+            if column["access"]=="edit" and column["field"] not in SYSTEM_COLUMNS
         ]
         addable_columns=get_addable_columns(db, username)
 
         rows=[]
         available_months=set()
+        available_entry_dates=set()
         for row in db.query(ReportRow).order_by(ReportRow.id).all():
-            data=parse_row_data(row.row_data)
+            data=calculate_report_row(parse_row_data(row.row_data))
+            if not data.get(DATE_OF_ENTRY_COLUMN) and row.updated_at:
+                data[DATE_OF_ENTRY_COLUMN]=format_date_value(row.updated_at)
+
             dispatch_month=parse_dispatch_month(data.get(DISPATCH_DATE_COLUMN, ""))
             if dispatch_month:
                 available_months.add(dispatch_month)
 
             if month and dispatch_month!=month:
+                continue
+
+            row_entry_date=str(data.get(DATE_OF_ENTRY_COLUMN, "")).strip()
+            if row_entry_date:
+                available_entry_dates.add(row_entry_date)
+
+            if entryDate and row_entry_date!=entryDate:
                 continue
 
             filtered={
@@ -553,7 +709,9 @@ def report(username:str, month:str=""):
             ],
             "rows":rows,
             "months":sorted(available_months, reverse=True),
-            "selectedMonth":month
+            "entryDates":sorted(available_entry_dates, reverse=True),
+            "selectedMonth":month,
+            "selectedEntryDate":entryDate
         }
     finally:
         db.close()
@@ -584,6 +742,8 @@ def update_report(
         username = clean_username(username)
         if not username or not field:
             raise HTTPException(status_code=400, detail="Username and field are required")
+        if field in SYSTEM_COLUMNS:
+            raise HTTPException(status_code=400, detail="This column is auto-calculated")
 
         try:
             version = int(version)
@@ -611,6 +771,7 @@ def update_report(
         old=str(data.get(field,""))
         if not isinstance(data, dict):data = {}
         data[field] = clean_input_value(value)
+        data=calculate_report_row(data)
 
         row.row_data=json.dumps(data)
         row.version+=1
@@ -632,8 +793,8 @@ def update_report(
         return {
             "message":"updated",
             "row":{
+                **data,
                 "id":row.id,
-                field:clean_input_value(value),
                 "version":row.version
             }
         }
@@ -652,6 +813,9 @@ def create_report(payload:ReportCreate):
         columns=get_report_columns(db)
         # include any new columns provided in payload.rowData
         original_columns = get_report_columns(db)
+        for col in addable_columns:
+            if col not in columns:
+                columns.append(col)
         for col in (payload.rowData or {}).keys():
             if col not in columns:
                 columns.append(col)
@@ -700,6 +864,9 @@ def create_report(payload:ReportCreate):
                 for column in columns
             }
 
+        row_data[DATE_OF_ENTRY_COLUMN]=today_ist()
+        row_data=calculate_report_row(row_data)
+
         row=ReportRow(
             row_data=json.dumps(row_data if isinstance(row_data, dict) else {}),
             updated_by=payload.username
@@ -732,7 +899,7 @@ def create_report(payload:ReportCreate):
 
 
 @app.get("/export")
-def export_data(username: str, month: str = ""):
+def export_data(username: str, month: str = "", entryDate: str = ""):
     db = SessionLocal()
     try:
         all_columns = get_report_columns(db)
@@ -757,10 +924,17 @@ def export_data(username: str, month: str = ""):
 
         rows = []
         for row in db.query(ReportRow).order_by(ReportRow.id).all():
-            data = json.loads(row.row_data)
+            data = calculate_report_row(parse_row_data(row.row_data))
+            if not data.get(DATE_OF_ENTRY_COLUMN) and row.updated_at:
+                data[DATE_OF_ENTRY_COLUMN]=format_date_value(row.updated_at)
+
             dispatch_month = parse_dispatch_month(data.get(DISPATCH_DATE_COLUMN, ""))
 
             if month and dispatch_month != month:
+                continue
+
+            row_entry_date=str(data.get(DATE_OF_ENTRY_COLUMN, "")).strip()
+            if entryDate and row_entry_date != entryDate:
                 continue
 
             filtered = {
