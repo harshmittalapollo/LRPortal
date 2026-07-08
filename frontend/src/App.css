@@ -183,6 +183,8 @@
 
 .report-controls {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   justify-content: flex-start;
 }
 
@@ -197,6 +199,7 @@
 }
 
 .report-controls select,
+.report-controls input,
 .add-entry-form input {
   border: 1px solid #cbd5e1;
   border-radius: 6px;
@@ -207,10 +210,24 @@
 }
 
 .report-controls select:focus,
+.report-controls input:focus,
 .add-entry-form input:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.16);
   outline: none;
+}
+
+.report-controls button {
+  align-self: flex-end;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #1f2937;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 8px 12px;
 }
 
 .add-entry-heading {
