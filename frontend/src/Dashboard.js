@@ -11,6 +11,8 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
   const [rows, setRows] = useState([]);
   const [months, setMonths] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState("");
+  const [entryDates, setEntryDates] = useState([]);
+  const [selectedEntryDate, setSelectedEntryDate] = useState("");
   const [newRow, setNewRow] = useState({});
   const [saving, setSaving] = useState({});
   const [message, setMessage] = useState("");
@@ -23,6 +25,7 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
     try {
       const params = new URLSearchParams({ username: session.username });
       if (selectedMonth) params.set("month", selectedMonth);
+      if (selectedEntryDate) params.set("entryDate", selectedEntryDate);
 
       const response = await fetch(`${API_URL}/report?${params.toString()}`);
       const data = await response.json();
@@ -38,12 +41,13 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
       setCanAddRows(Boolean(data.canAddRows));
       setRows(data.rows || []);
       setMonths(data.months || []);
+      setEntryDates(data.entryDates || []);
     } catch (error) {
       setMessage("Backend is not reachable. Start the backend on port 8000.");
     } finally {
       setLoading(false);
     }
-  }, [selectedMonth, session.username]);
+  }, [selectedEntryDate, selectedMonth, session.username]);
 
   useEffect(() => {
     loadReport();
@@ -80,7 +84,7 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
 
       const updatedRow = {
         ...row,
-        [field]: value,
+        ...(data.row || {}),
         version: data.row?.version ?? data.version ?? row.version,
       };
 
@@ -154,6 +158,7 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
     try {
       const params = new URLSearchParams({ username: session.username });
       if (selectedMonth) params.set("month", selectedMonth);
+      if (selectedEntryDate) params.set("entryDate", selectedEntryDate);
 
       const response = await fetch(`${API_URL}/export?${params.toString()}`);
 
@@ -171,7 +176,7 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
         response.headers
           .get("content-disposition")
           ?.split("filename=")[1]
-          ?.replace(/"/g, "") || `report_${session.username}_${selectedMonth || "all"}.csv`;
+          ?.replace(/"/g, "") || `report_${session.username}_${selectedMonth || selectedEntryDate || "all"}.csv`;
 
       link.setAttribute("download", filename);
       document.body.appendChild(link);
@@ -250,6 +255,25 @@ function Dashboard({ session, onOpenAdmin, onLogout }) {
               ))}
             </select>
           </label>
+          <label>
+            Date of Entry:
+            <input
+              type="date"
+              value={selectedEntryDate}
+              onChange={(e) => setSelectedEntryDate(e.target.value)}
+              list="entry-date-options"
+            />
+            <datalist id="entry-date-options">
+              {entryDates.map((entryDate) => (
+                <option key={entryDate} value={entryDate} />
+              ))}
+            </datalist>
+          </label>
+          {selectedEntryDate && (
+            <button type="button" onClick={() => setSelectedEntryDate("")}>
+              Clear Date
+            </button>
+          )}
         </div>
 
         {loading ? (
