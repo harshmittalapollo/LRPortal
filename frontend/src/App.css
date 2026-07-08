@@ -474,6 +474,25 @@
   color: #b91c1c;
 }
 
+.audit-panel {
+  margin: 0 auto;
+  max-width: 1500px;
+}
+
+.audit-table {
+  min-width: 980px;
+}
+
+.audit-table td {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.audit-table td:last-child {
+  display: table-cell;
+}
+
 .table-wrap {
   max-height: calc(100vh - 210px);
   overflow: auto;
