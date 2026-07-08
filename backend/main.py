@@ -785,6 +785,33 @@ def export_data(username: str, month: str = ""):
         db.close()
 
 
+@app.get("/admin/audit-logs")
+def list_audit_logs(adminUsername: str, limit: int = Query(default=500, ge=1, le=5000)):
+    db=SessionLocal()
+    try:
+        denied=require_admin(db, adminUsername)
+        if denied:
+            return denied
+
+        logs=db.query(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(limit).all()
+        return {
+            "logs":[
+                {
+                    "id":log.id,
+                    "lrNo":log.lr_no,
+                    "columnName":log.column_name,
+                    "oldValue":log.old_value,
+                    "newValue":log.new_value,
+                    "updatedBy":log.updated_by,
+                    "timestamp":log.timestamp.isoformat() if log.timestamp else "",
+                }
+                for log in logs
+            ]
+        }
+    finally:
+        db.close()
+
+
 @app.get("/audit/{lr_no}")
 def audit(lr_no:str):
     db=SessionLocal()
