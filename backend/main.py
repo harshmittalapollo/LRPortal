@@ -25,11 +25,12 @@ ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "abcd@1234"
 DISPATCH_DATE_COLUMN = "Dispatch Dt."
 DATE_OF_ENTRY_COLUMN = "Date of entry"
+MARGIN_PERCENT_COLUMN = "Margin %"
 AUTO_CALCULATED_COLUMNS = [
     "Customer Total",
     "Vendor Total",
     "Margin",
-    "Margin%",
+    MARGIN_PERCENT_COLUMN,
     "Adv.",
     "Bal.",
     "Assured Delivery Date",
@@ -114,6 +115,13 @@ def clean_input_value(value):
     if value is None:
         return ""
     return str(value)
+
+
+def canonical_column_name(column):
+    text=str(column or "").strip()
+    if text.replace(" ", "").lower()=="margin%":
+        return MARGIN_PERCENT_COLUMN
+    return text
     
 def parse_row_data(row_data):
     try:
@@ -209,6 +217,10 @@ def calculate_report_row(data):
     if not isinstance(data, dict):
         data={}
 
+    margin_percent_value=data.pop("Margin%", None)
+    if margin_percent_value and not data.get(MARGIN_PERCENT_COLUMN):
+        data[MARGIN_PERCENT_COLUMN]=margin_percent_value
+
     customer_total=sum(
         parse_number(data.get(column))
         for column in [
@@ -235,7 +247,7 @@ def calculate_report_row(data):
     balance=vendor_total - advance
 
     dispatch_date=parse_date_value(data.get(DISPATCH_DATE_COLUMN))
-    assured_days=parse_number(data.get("Assured Date"))
+    assured_days=parse_number(data.get("Assured Date") or data.get("Assured TAT"))
     assured_delivery_date=None
     if dispatch_date and assured_days:
         assured_delivery_date=dispatch_date + timedelta(days=int(assured_days))
@@ -248,7 +260,7 @@ def calculate_report_row(data):
     data["Customer Total"]=format_number(customer_total)
     data["Vendor Total"]=format_number(vendor_total)
     data["Margin"]=format_number(margin)
-    data["Margin%"]=format_number(margin_percent)
+    data[MARGIN_PERCENT_COLUMN]=format_number(margin_percent)
     data["Adv."]=format_number(advance)
     data["Bal."]=format_number(balance)
     data["Assured Delivery Date"]=format_date_value(assured_delivery_date)
@@ -256,8 +268,9 @@ def calculate_report_row(data):
     return data
 
 def get_report_columns(db):
-    columns=[]
+    columns=[DATE_OF_ENTRY_COLUMN]
     seen=set()
+    seen.add(DATE_OF_ENTRY_COLUMN)
 
     for row in db.query(ReportRow).order_by(ReportRow.id).all():
         try:
@@ -266,15 +279,17 @@ def get_report_columns(db):
             data={}
 
         for column in data.keys():
+            column=canonical_column_name(column)
             if column not in seen:
                 seen.add(column)
                 columns.append(column)
 
-    if not columns:
+    if len(columns)==1:
         for permission in db.query(Permission).order_by(Permission.id).all():
-            if permission.column_name not in seen:
-                seen.add(permission.column_name)
-                columns.append(permission.column_name)
+            column=canonical_column_name(permission.column_name)
+            if column not in seen:
+                seen.add(column)
+                columns.append(column)
 
     for column in SYSTEM_COLUMNS:
         if column not in seen:
@@ -298,7 +313,7 @@ def ensure_admin_user():
         admin.role="Admin"
 
         existing_permissions={
-            permission.column_name
+            canonical_column_name(permission.column_name)
             for permission in db.query(Permission).filter(
                 Permission.username==ADMIN_USERNAME
             ).all()
@@ -387,7 +402,7 @@ def normalize_permission_access(value):
 def permission_map_for_user(db, username, columns):
     permissions=db.query(Permission).filter(Permission.username==username).all()
     access_by_column={
-        permission.column_name: normalize_permission_access(permission.access)
+        canonical_column_name(permission.column_name): normalize_permission_access(permission.access)
         for permission in permissions
     }
     return {
@@ -583,7 +598,7 @@ def update_user(user_id:int, payload:UserUpdate):
 
         if role=="Admin":
             existing_permissions={
-                permission.column_name
+                canonical_column_name(permission.column_name)
                 for permission in db.query(Permission).filter(
                     Permission.username==username
                 ).all()
@@ -643,7 +658,7 @@ def report(username:str, month:str="", entryDate:str=""):
             ).all()
 
             access_by_column={
-                permission.column_name: normalize_permission_access(permission.access)
+                canonical_column_name(permission.column_name): normalize_permission_access(permission.access)
                 for permission in permissions
             }
 
@@ -674,14 +689,14 @@ def report(username:str, month:str="", entryDate:str=""):
             if not data.get(DATE_OF_ENTRY_COLUMN) and row.updated_at:
                 data[DATE_OF_ENTRY_COLUMN]=format_date_value(row.updated_at)
 
-            dispatch_month=parse_dispatch_month(data.get(DISPATCH_DATE_COLUMN, ""))
-            if dispatch_month:
-                available_months.add(dispatch_month)
+            row_entry_date=str(data.get(DATE_OF_ENTRY_COLUMN, "")).strip()
+            entry_month=parse_dispatch_month(row_entry_date)
+            if entry_month:
+                available_months.add(entry_month)
 
-            if month and dispatch_month!=month:
+            if month and entry_month!=month:
                 continue
 
-            row_entry_date=str(data.get(DATE_OF_ENTRY_COLUMN, "")).strip()
             if row_entry_date:
                 available_entry_dates.add(row_entry_date)
 
@@ -740,6 +755,7 @@ def update_report(
     db = SessionLocal()
     try:
         username = clean_username(username)
+        field = canonical_column_name(field)
         if not username or not field:
             raise HTTPException(status_code=400, detail="Username and field are required")
         if field in SYSTEM_COLUMNS:
@@ -912,7 +928,7 @@ def export_data(username: str, month: str = "", entryDate: str = ""):
                 Permission.username == username
             ).all()
             access_by_column = {
-                permission.column_name: permission.access
+                canonical_column_name(permission.column_name): permission.access
                 for permission in permissions
             }
 
@@ -928,12 +944,12 @@ def export_data(username: str, month: str = "", entryDate: str = ""):
             if not data.get(DATE_OF_ENTRY_COLUMN) and row.updated_at:
                 data[DATE_OF_ENTRY_COLUMN]=format_date_value(row.updated_at)
 
-            dispatch_month = parse_dispatch_month(data.get(DISPATCH_DATE_COLUMN, ""))
+            row_entry_date=str(data.get(DATE_OF_ENTRY_COLUMN, "")).strip()
+            entry_month = parse_dispatch_month(row_entry_date)
 
-            if month and dispatch_month != month:
+            if month and entry_month != month:
                 continue
 
-            row_entry_date=str(data.get(DATE_OF_ENTRY_COLUMN, "")).strip()
             if entryDate and row_entry_date != entryDate:
                 continue
 
